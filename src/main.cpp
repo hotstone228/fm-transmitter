@@ -1,149 +1,111 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#define GH_INCLUDE_PORTAL // вшить сайт в прошивку (~50 КБ)
-#include <GyverHub.h>
+#include <ESPUI.h>
 
 #include <Wire.h>
 #include <Adafruit_Si4713.h>
-#include <stdlib.h>
-#include <StringUtils.h>
 
-// ====== Si4713 ======
+const char *AP_SSID = "ESP32C3-ESPUI";
+const char *AP_PASS = "";
+
 #define RESETPIN 10
-#define TX_POWER_DBuv 115 // 88..115 (115 max)
+#define SDA_PIN 8
+#define SCL_PIN 9
+#define TX_POWER_DBuv 115
+
 Adafruit_Si4713 radio(RESETPIN);
+bool radioFound = false;
 
-// ====== GyverHub ======
-GyverHub hub("MyDevices", "ESP32-C3", ""); // префикс, имя, иконка
-
-// ====== Состояние радио ======
 bool radioOn = false;
-uint16_t freq_khz = 9840; // по умолчанию 98.40 МГц
-uint8_t presetIdx = 0;
-const uint16_t PRESETS[] = {
-    8810, 9050, 9240, 9450, 9630, 9870, 10010, 10230, 10470, 10790};
-#define PRESETS_N (sizeof(PRESETS) / sizeof(PRESETS[0]))
+uint16_t freq_khz = 9840;
 
-// ---------- утилиты ----------
+uint16_t swId, slId;
+
 void radioPowerOn()
 {
-    // вывести из reset и инициализировать
+    // release reset and give the chip time to wake
     digitalWrite(RESETPIN, HIGH);
-    delay(10);
-    if (!radio.begin())
+    delay(15); // >=10ms is safe
+
+    // ALWAYS (re)initialize after a hard reset
+    radioFound = radio.begin(); // I2C addr 0x63 if CS=HIGH
+    if (!radioFound)
     {
-        Serial.println(F("[Si4713] Not found after reset"));
+        Serial.println("[Si4713] begin() failed");
         return;
     }
     radio.setTXpower(TX_POWER_DBuv);
     radio.tuneFM(freq_khz);
+    Serial.printf("[Si4713] ON @ %u kHz\n", freq_khz);
 }
 
 void radioPowerOff()
 {
-    // простой «OFF» — удерживаем чип в reset
+    // put the chip into hard reset and mark uninitialized
     digitalWrite(RESETPIN, LOW);
+    radioFound = false; // <— critical!
+    Serial.println("[Si4713] OFF (reset held)");
 }
 
-// ---------- GUI (builder) ----------
-void build(gh::Builder &b)
-{ // см. раздел "Билдер" в доке :contentReference[oaicite:1]{index=1}
-    b.Title("FM Transmitter");
-
-    b.Switch_("radio_on", &radioOn) // переключатель «включить радио»
-        .label("Включить радио");
-
-    b.Slider_("freq_slider", &freq_khz) // ползунок 8000..11000, шаг 10
-        .label("Частота, кГц")
-        .range(8000, 11000, 10)
-        .unit("kHz");
-
-    // выпадающий список с рандомными пресетами
-    // value = индекс пункта, text = "пункты через ;"
-    String list;
-    for (uint8_t i = 0; i < PRESETS_N; i++)
-    {
-        if (i)
-            list += ';';
-        uint16_t kHz = PRESETS[i];
-        char buf[8]; // "xxxxx.yy" хватит
-        snprintf(buf, sizeof(buf), "%u.%02u", kHz / 100, kHz % 100);
-        list += buf;
-    }
-
-    b.Select_("freq_select", &presetIdx)
-        .label("Пресеты")
-        .text(list);
-}
-
-// обработчик команд от клиента (Set/Read/Get и т.п.) — см. onRequest/gh::Request в доке :contentReference[oaicite:2]{index=2}
-// обработчик ДОЛЖЕН возвращать bool
-bool onReq(gh::Request &r)
+// ---- ESPUI callbacks ----
+// NOTE: 'type' is an event code; the control value is in sender->value
+void cbSwitch(Control *sender, int type)
 {
-    if (r.cmd != gh::CMD::Set)
-        return false;
+    (void)type;
+    String s = sender->value; // "1"/"0" or "true"/"false"
+    bool on = (s == "1" || s == "true");
+    radioOn = on;
+    if (on)
+        radioPowerOn();
+    else
+        radioPowerOff();
+    Serial.printf("[UI] Switch -> %s\n", on ? "ON" : "OFF");
+}
 
-    if (r.name == "radio_on")
-    {
-        // r.value — AnyText: сравниваем напрямую или через toString()
-        radioOn = (r.value == "1" || r.value == "true");
-        if (radioOn)
-            radioPowerOn();
-        else
-            radioPowerOff();
-        return true;
-    }
-
-    if (r.name == "freq_slider")
-    {
-        freq_khz = r.value.toString().toInt();
-        if (radioOn)
-            radio.tuneFM(freq_khz);
-        return true;
-    }
-
-    if (r.name == "freq_select")
-    {
-        uint8_t idx = r.value.toString().toInt();
-        if (idx >= PRESETS_N)
-            idx = 0;
-        presetIdx = idx;
-        freq_khz = PRESETS[presetIdx];
-
-        // синхронизируем слайдер
-        hub.sendUpdate("freq_slider", (int)freq_khz);
-
-        if (radioOn)
-            radio.tuneFM(freq_khz);
-        return true;
-    }
-
-    return false; // неизвестное имя — не обработали
+void cbSlider(Control *sender, int type)
+{
+    (void)type;
+    // If you used the 6-arg slider with kHz range, this is already kHz:
+    uint16_t kHz = (uint16_t)sender->value.toInt();
+    if (kHz < 8000)
+        kHz = 8000;
+    if (kHz > 11000)
+        kHz = 11000;
+    freq_khz = kHz;
+    if (radioOn && radioFound)
+        radio.tuneFM(freq_khz);
+    Serial.printf("[UI] Slider -> %u kHz\n", freq_khz);
 }
 
 void setup()
 {
     Serial.begin(115200);
-    delay(200);
 
-    // ---------- Wi-Fi AP ----------
+    Wire.begin(SDA_PIN, SCL_PIN);
+    Wire.setTimeOut(50);
+    pinMode(RESETPIN, OUTPUT);
+    radioPowerOff();
+
     WiFi.mode(WIFI_AP);
-    WiFi.softAP("ESP32C3-Radio"); // без пароля (можно добавить)
-    Serial.print(F("[WiFi] AP IP: "));
+    WiFi.softAP(AP_SSID, AP_PASS);
+    Serial.print("AP IP: ");
     Serial.println(WiFi.softAPIP());
 
-    // ---------- I2C + Si4713 ----------
-    Wire.begin(8, 9); // SDA=8, SCL=9 (твои пины)
-    pinMode(RESETPIN, OUTPUT);
-    radioPowerOff(); // стартуем в «выкл.»
+    ESPUI.begin("ESP32-C3 Radio");
 
-    // ---------- GyverHub ----------
-    hub.onBuild(build);   // GUI
-    hub.onRequest(onReq); // обработка команд
-    hub.begin();          // запуск хаба (tick в loop) :contentReference[oaicite:4]{index=4}
+    // Store control IDs (optional but handy)
+    swId = ESPUI.switcher("Enable Radio", cbSwitch, ControlColor::Emerald, radioOn);
+
+    // If your ESPUI version supports min/max:
+    slId = ESPUI.slider("Frequency (kHz)", cbSlider, ControlColor::Turquoise,
+                        freq_khz, 8000, 11000);
+
+    // If using the 0..100 slider variant instead, do this:
+    // slId = ESPUI.slider("Frequency (%)", cbSlider, ControlColor::Turquoise, 28);
+    // and in cbSlider: map 0..100 to 8000..11000.
 }
 
 void loop()
 {
-    hub.tick(); // обязательно в loop :contentReference[oaicite:5]{index=5}
+    // ESPUI is async, nothing required here
 }
