@@ -3,6 +3,8 @@
 #include <Wire.h>
 #include <ESPUI.h>
 #include <Adafruit_Si4713.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 // ===== Wi-Fi AP =====
 const char *AP_SSID = "FM-TX";
@@ -266,8 +268,7 @@ void performScan(float startMHz, float endMHz, uint16_t stepKHz)
         results += " : ";
         results += String(radio.currNoiseLevel);
         results += "\n";
-        delay(5);
-        yield();
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
     ESPUI.updateControlValue(idScanResults, results);
     Serial.println("[performScan] done");
@@ -276,6 +277,21 @@ void performScan(float startMHz, float endMHz, uint16_t stepKHz)
     radio.setTXpower(prevPower);
     if (needPowerOff)
         radioPowerOff();
+}
+
+struct ScanParams
+{
+    float startM;
+    float endM;
+    uint16_t stepKHz;
+};
+
+void scanTask(void *pv)
+{
+    ScanParams *p = (ScanParams *)pv;
+    performScan(p->startM, p->endM, p->stepKHz);
+    delete p;
+    vTaskDelete(NULL);
 }
 
 void cbScanButton(Control *sender, int type)
@@ -289,7 +305,8 @@ void cbScanButton(Control *sender, int type)
         float endM = cEnd ? cEnd->value.toFloat() : 108.0f;
         uint16_t stepKHz = cStep ? (uint16_t)cStep->value.toInt() : 100;
         Serial.printf("[cbScanButton] %.1f-%.1f step %u\n", startM, endM, stepKHz);
-        performScan(startM, endM, stepKHz);
+        ScanParams *p = new ScanParams{startM, endM, stepKHz};
+        xTaskCreate(scanTask, "scan", 4096, p, 1, NULL);
     }
 }
 
