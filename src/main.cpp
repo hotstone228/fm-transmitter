@@ -28,7 +28,7 @@ bool rdsOn = true;
 uint16_t tabRadio, tabRDS, tabAdvanced;
 uint16_t idSwitch, idLabelFreq, idSliderMHz, idSliderFrac, idSelect, idTxPower;
 uint16_t idFreqCorr;
-uint16_t idRdsSwitch, idRdsPS, idRdsRT, idRdsApply;
+uint16_t idRdsSwitch, idRdsPS, idRdsRT;
 
 // ===== Presets (Moscow) =====
 struct Preset
@@ -78,6 +78,8 @@ static String fmtMHz(uint16_t t)
     return String(b);
 }
 
+static void applyRds();
+
 void applyTxPower(uint8_t pwr)
 {
     Serial.printf("[applyTxPower] requested %u\n", pwr);
@@ -121,7 +123,10 @@ void radioPowerOn()
     int32_t freq_khz = (int32_t)freq_tenths * 100 + freq_correction_khz;
     radio.tuneFM((uint16_t)(freq_khz / 10));
     if (rdsOn)
+    {
         radio.beginRDS();
+        applyRds();
+    }
     Serial.printf("[Si4713] ON @ %s MHz (corr %d kHz)\n", fmtMHz(freq_tenths).c_str(), freq_correction_khz);
 }
 
@@ -209,25 +214,36 @@ static String trimPS8(const String &s)
     return t;
 }
 
+static void applyRds()
+{
+    Control *ps = ESPUI.getControl(idRdsPS);
+    Control *rt = ESPUI.getControl(idRdsRT);
+    String ps8 = ps ? trimPS8(ps->value) : "RADIO";
+    String rt64 = rt ? rt->value : "Hello from ESP32";
+    radio.setRDSstation(ps8.c_str());
+    radio.setRDSbuffer(rt64.c_str());
+    Serial.printf("[applyRds] PS='%s' RT='%s'\n", ps8.c_str(), rt64.c_str());
+}
+
 void cbRdsSwitch(Control *sender, int type)
 {
     Serial.printf("[cbRdsSwitch] type=%d\n", type);
     rdsOn = (type == S_ACTIVE);
     if (rdsOn && radioOn && radioFound)
+    {
         radio.beginRDS();
+        applyRds();
+    }
 }
 
-void cbRdsApply(Control *sender, int type)
+void cbRdsText(Control *sender, int type)
 {
-    if (type == B_UP && radioOn && radioFound && rdsOn)
+    if (type == T_VALUE)
     {
-        Serial.println("[cbRdsApply]");
-        Control *ps = ESPUI.getControl(idRdsPS);
-        Control *rt = ESPUI.getControl(idRdsRT);
-        String ps8 = ps ? trimPS8(ps->value) : "RADIO";
-        String rt64 = rt ? rt->value : "Hello from ESP32";
-        radio.setRDSstation(ps8.c_str());
-        radio.setRDSbuffer(rt64.c_str());
+        Serial.printf("[cbRdsText] id=%u val='%s'\n", sender->id,
+                      sender->value.c_str());
+        if (radioOn && radioFound && rdsOn)
+            applyRds();
     }
 }
 
@@ -295,14 +311,11 @@ void buildUI()
 
     idRdsPS = ESPUI.addControl(ControlType::Text,
                                "PS (Program Service, 8 chars)", "ESPUI FM",
-                               ControlColor::Wetasphalt, tabRDS);
+                               ControlColor::Wetasphalt, tabRDS, &cbRdsText);
 
     idRdsRT = ESPUI.addControl(ControlType::Text,
                                "RadioText (up to ~64 chars)", "Hello from ESP32-C3 + Si4713",
-                               ControlColor::Wetasphalt, tabRDS);
-
-    idRdsApply = ESPUI.addControl(ControlType::Button, "Apply RDS", "Send",
-                                  ControlColor::Peterriver, tabRDS, &cbRdsApply);
+                               ControlColor::Wetasphalt, tabRDS, &cbRdsText);
 }
 
 void setup()
