@@ -7,7 +7,9 @@ This project is an FM transmitter based on the ESP32-C3 microcontroller and the 
 - Control FM frequency (range: 80.00–110.00 MHz)
 - Power on/off the transmitter
 - Select from preset frequencies
+- Frequency presets sorted by frequency
 - Web interface via Wi-Fi Access Point (no password by default)
+- Frequency correction offset
 - Built with PlatformIO for Arduino framework
 
 ## Hardware Requirements

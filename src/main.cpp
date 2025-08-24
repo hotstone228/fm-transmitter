@@ -20,13 +20,15 @@ bool radioFound = false;
 
 // Frequency in tenths of MHz (e.g. 1034 = 103.4 MHz)
 uint16_t freq_tenths = 1034;
+int16_t freq_correction_khz = 0; // added to target frequency, in kHz
 uint8_t txPower = TX_POWER_DBuv;
 bool rdsOn = true;
 
 // ===== UI IDs =====
 uint16_t tabRadio, tabRDS, tabAdvanced;
 uint16_t idSwitch, idLabelFreq, idSliderMHz, idSliderFrac, idSelect, idTxPower;
-uint16_t idRdsSwitch, idRdsPS, idRdsRT, idRdsApply;
+uint16_t idFreqCorr;
+uint16_t idRdsSwitch, idRdsPS, idRdsRT;
 
 // ===== Presets (Moscow) =====
 struct Preset
@@ -35,29 +37,29 @@ struct Preset
     uint16_t t;
 };
 Preset PRESETS[] = {
-    {"Europa Plus — 106.2", 1062},
-    {"Русское Радио — 105.7", 1057},
-    {"Маяк — 103.4", 1034},
-    {"Вести FM — 97.6", 976},
-    {"Радио России — 101.5", 1015},
-    {"Орфей — 99.2", 992},
-    {"Авторадио — 90.3", 903},
-    {"Наше Радио — 101.8", 1018},
-    {"Love Radio — 106.6", 1066},
     {"Retro FM — 88.3", 883},
-    {"Дорожное Радио — 96.0", 960},
-    {"Шансон — 103.0", 1030},
-    {"Монте-Карло — 102.1", 1021},
-    {"ENERGY — 104.2", 1042},
-    {"Радио Дача — 92.4", 924},
-    {"Relax FM — 90.8", 908},
     {"Юмор FM — 88.7", 887},
-    {"Радио 7 — 104.7", 1047},
-    {"Comedy Radio — 102.5", 1025},
-    {"Звезда — 95.6", 956},
+    {"JAZZ — 89.1", 891},
+    {"Авторадио — 90.3", 903},
+    {"Relax FM — 90.8", 908},
+    {"Радио Дача — 92.4", 924},
     {"Rock FM — 95.2", 952},
-    {"Хит FM — 107.4", 1074},
-    {"JAZZ — 89.1", 891}};
+    {"Звезда — 95.6", 956},
+    {"Дорожное Радио — 96.0", 960},
+    {"Вести FM — 97.6", 976},
+    {"Орфей — 99.2", 992},
+    {"Радио России — 101.5", 1015},
+    {"Наше Радио — 101.8", 1018},
+    {"Монте-Карло — 102.1", 1021},
+    {"Comedy Radio — 102.5", 1025},
+    {"Шансон — 103.0", 1030},
+    {"Маяк — 103.4", 1034},
+    {"ENERGY — 104.2", 1042},
+    {"Радио 7 — 104.7", 1047},
+    {"Русское Радио — 105.7", 1057},
+    {"Europa Plus — 106.2", 1062},
+    {"Love Radio — 106.6", 1066},
+    {"Хит FM — 107.4", 1074}};
 const uint8_t PRESETS_N = sizeof(PRESETS) / sizeof(Preset);
 
 // ===== helpers =====
@@ -76,8 +78,11 @@ static String fmtMHz(uint16_t t)
     return String(b);
 }
 
+static void applyRds();
+
 void applyTxPower(uint8_t pwr)
 {
+    Serial.printf("[applyTxPower] requested %u\n", pwr);
     if (pwr < 88)
         pwr = 88;
     if (pwr > 115)
@@ -90,6 +95,7 @@ void applyTxPower(uint8_t pwr)
 
 void applyTune(uint16_t tenths)
 {
+    Serial.printf("[applyTune] tenths=%u corr=%d\n", tenths, freq_correction_khz);
     tenths = clampTenths(tenths);
     freq_tenths = tenths;
     ESPUI.updateControlValue(idLabelFreq, "Freq: " + fmtMHz(freq_tenths) + " MHz");
@@ -97,12 +103,14 @@ void applyTune(uint16_t tenths)
     ESPUI.updateControlValue(idSliderFrac, String(freq_tenths % 10));
     if (radioOn && radioFound)
     {
-        radio.tuneFM(freq_tenths * 10); // Si4713 expects 10 kHz units
+        int32_t freq_khz = (int32_t)freq_tenths * 100 + freq_correction_khz;
+        radio.tuneFM((uint16_t)(freq_khz / 10)); // 10 kHz units
     }
 }
 
 void radioPowerOn()
 {
+    Serial.println("[radioPowerOn]");
     digitalWrite(RESETPIN, HIGH);
     delay(15);                  // wakeup time
     radioFound = radio.begin(); // (re)initialize every ON
@@ -112,14 +120,19 @@ void radioPowerOn()
         return;
     }
     radio.setTXpower(txPower);
-    radio.tuneFM(freq_tenths * 10);
+    int32_t freq_khz = (int32_t)freq_tenths * 100 + freq_correction_khz;
+    radio.tuneFM((uint16_t)(freq_khz / 10));
     if (rdsOn)
+    {
         radio.beginRDS();
-    Serial.printf("[Si4713] ON @ %s MHz\n", fmtMHz(freq_tenths).c_str());
+        applyRds();
+    }
+    Serial.printf("[Si4713] ON @ %s MHz (corr %d kHz)\n", fmtMHz(freq_tenths).c_str(), freq_correction_khz);
 }
 
 void radioPowerOff()
 {
+    Serial.println("[radioPowerOff]");
     digitalWrite(RESETPIN, LOW); // hold reset = OFF
     radioFound = false;
     Serial.println("[Si4713] OFF (reset)");
@@ -131,6 +144,7 @@ void cbRadioSwitch(Control *sender, int type)
 {
     if (type == S_ACTIVE || type == S_INACTIVE)
     {
+        Serial.printf("[cbRadioSwitch] type=%d\n", type);
         radioOn = (type == S_ACTIVE);
         if (radioOn)
             radioPowerOn();
@@ -144,6 +158,7 @@ void cbFreqSliderMHz(Control *sender, int type)
     if (type == SL_VALUE)
     {
         uint16_t mhz = (uint16_t)sender->value.toInt();
+        Serial.printf("[cbFreqSliderMHz] %u\n", mhz);
         uint16_t t = mhz * 10 + (freq_tenths % 10);
         applyTune(t);
     }
@@ -154,6 +169,7 @@ void cbFreqSliderFrac(Control *sender, int type)
     if (type == SL_VALUE)
     {
         uint16_t frac = (uint16_t)sender->value.toInt();
+        Serial.printf("[cbFreqSliderFrac] %u\n", frac);
         uint16_t t = (freq_tenths / 10) * 10 + frac;
         applyTune(t);
     }
@@ -164,6 +180,7 @@ void cbPresetSelect(Control *sender, int type)
     if (type == S_VALUE)
     {
         uint16_t t = (uint16_t)sender->value.toInt(); // we store tenths in Option value
+        Serial.printf("[cbPresetSelect] %u\n", t);
         applyTune(t);
     }
 }
@@ -172,7 +189,19 @@ void cbTxPower(Control *sender, int type)
 {
     if (type == SL_VALUE)
     {
-        applyTxPower((uint8_t)sender->value.toInt());
+        uint8_t p = (uint8_t)sender->value.toInt();
+        Serial.printf("[cbTxPower] %u\n", p);
+        applyTxPower(p);
+    }
+}
+
+void cbFreqCorr(Control *sender, int type)
+{
+    if (type == N_VALUE)
+    {
+        freq_correction_khz = (int16_t)sender->value.toInt();
+        Serial.printf("[cbFreqCorr] %d kHz\n", freq_correction_khz);
+        applyTune(freq_tenths); // retune with new correction
     }
 }
 
@@ -185,29 +214,44 @@ static String trimPS8(const String &s)
     return t;
 }
 
-void cbRdsSwitch(Control *sender, int type)
+static void applyRds()
 {
-    rdsOn = (type == S_ACTIVE);
-    if (rdsOn && radioOn && radioFound)
-        radio.beginRDS();
+    Control *ps = ESPUI.getControl(idRdsPS);
+    Control *rt = ESPUI.getControl(idRdsRT);
+    String ps8 = ps ? trimPS8(ps->value) : "RADIO";
+    String rt64 = rt ? rt->value : "Hello from ESP32";
+    radio.setRDSstation(ps8.c_str());
+    radio.setRDSbuffer(rt64.c_str());
+    Serial.printf("[applyRds] PS='%s' RT='%s'\n", ps8.c_str(), rt64.c_str());
 }
 
-void cbRdsApply(Control *sender, int type)
+void cbRdsSwitch(Control *sender, int type)
 {
-    if (type == B_UP && radioOn && radioFound && rdsOn)
+    Serial.printf("[cbRdsSwitch] type=%d\n", type);
+    rdsOn = (type == S_ACTIVE);
+    if (rdsOn && radioOn && radioFound)
     {
-        Control *ps = ESPUI.getControl(idRdsPS);
-        Control *rt = ESPUI.getControl(idRdsRT);
-        String ps8 = ps ? trimPS8(ps->value) : "RADIO";
-        String rt64 = rt ? rt->value : "Hello from ESP32";
-        radio.setRDSstation(ps8.c_str());
-        radio.setRDSbuffer(rt64.c_str());
+        radio.beginRDS();
+        applyRds();
     }
 }
+
+void cbRdsText(Control *sender, int type)
+{
+    if (type == T_VALUE)
+    {
+        Serial.printf("[cbRdsText] id=%u val='%s'\n", sender->id,
+                      sender->value.c_str());
+        if (radioOn && radioFound && rdsOn)
+            applyRds();
+    }
+}
+
 
 // ===== build UI (classic API) =====
 void buildUI()
 {
+    Serial.println("[buildUI]");
     // Tabs
     tabRadio = ESPUI.addControl(ControlType::Tab, "Radio", "Radio");
     tabRDS = ESPUI.addControl(ControlType::Tab, "RDS", "RDS");
@@ -253,25 +297,31 @@ void buildUI()
     ESPUI.addControl(ControlType::Max, "", "115", ControlColor::None, idTxPower);
     ESPUI.addControl(ControlType::Step, "", "1", ControlColor::None, idTxPower);
 
+    ESPUI.addControl(ControlType::Separator, "Frequency correction (kHz)", "",
+                     ControlColor::None, tabAdvanced);
+    idFreqCorr = ESPUI.addControl(ControlType::Number, "Correction",
+                                  String(freq_correction_khz), ControlColor::Wetasphalt, tabAdvanced, &cbFreqCorr);
+    ESPUI.addControl(ControlType::Min, "", "-1000", ControlColor::None, idFreqCorr);
+    ESPUI.addControl(ControlType::Max, "", "1000", ControlColor::None, idFreqCorr);
+    ESPUI.addControl(ControlType::Step, "", "1", ControlColor::None, idFreqCorr);
+
     // --- RDS tab ---
     idRdsSwitch = ESPUI.addControl(ControlType::Switcher, "RDS enable",
                                    rdsOn ? "1" : "0", ControlColor::Emerald, tabRDS, &cbRdsSwitch);
 
     idRdsPS = ESPUI.addControl(ControlType::Text,
                                "PS (Program Service, 8 chars)", "ESPUI FM",
-                               ControlColor::Wetasphalt, tabRDS);
+                               ControlColor::Wetasphalt, tabRDS, &cbRdsText);
 
     idRdsRT = ESPUI.addControl(ControlType::Text,
                                "RadioText (up to ~64 chars)", "Hello from ESP32-C3 + Si4713",
-                               ControlColor::Wetasphalt, tabRDS);
-
-    idRdsApply = ESPUI.addControl(ControlType::Button, "Apply RDS", "Send",
-                                  ControlColor::Peterriver, tabRDS, &cbRdsApply);
+                               ControlColor::Wetasphalt, tabRDS, &cbRdsText);
 }
 
 void setup()
 {
     Serial.begin(115200);
+    Serial.println("[setup]");
     delay(200);
 
     Wire.begin(SDA_PIN, SCL_PIN);
@@ -291,6 +341,7 @@ void setup()
     ESPUI.updateControlValue(idSliderMHz, String(freq_tenths / 10));
     ESPUI.updateControlValue(idSliderFrac, String(freq_tenths % 10));
     ESPUI.updateControlValue(idTxPower, String(txPower));
+    ESPUI.updateControlValue(idFreqCorr, String(freq_correction_khz));
 }
 
 void loop()
