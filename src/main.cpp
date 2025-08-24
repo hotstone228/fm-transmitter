@@ -24,8 +24,8 @@ uint8_t txPower = TX_POWER_DBuv;
 bool rdsOn = true;
 
 // ===== UI IDs =====
-uint16_t tabRadio, tabRDS;
-uint16_t idSwitch, idLabelFreq, idSlider, idSelect, idTxPower;
+uint16_t tabRadio, tabRDS, tabAdvanced;
+uint16_t idSwitch, idLabelFreq, idSliderMHz, idSliderFrac, idSelect, idTxPower;
 uint16_t idRdsSwitch, idRdsPS, idRdsRT, idRdsApply;
 
 // ===== Presets (Moscow) =====
@@ -44,7 +44,20 @@ Preset PRESETS[] = {
     {"Авторадио — 90.3", 903},
     {"Наше Радио — 101.8", 1018},
     {"Love Radio — 106.6", 1066},
-    {"Retro FM — 88.3", 883}};
+    {"Retro FM — 88.3", 883},
+    {"Дорожное Радио — 96.0", 960},
+    {"Шансон — 103.0", 1030},
+    {"Монте-Карло — 102.1", 1021},
+    {"ENERGY — 104.2", 1042},
+    {"Радио Дача — 92.4", 924},
+    {"Relax FM — 90.8", 908},
+    {"Юмор FM — 88.7", 887},
+    {"Радио 7 — 104.7", 1047},
+    {"Comedy Radio — 102.5", 1025},
+    {"Звезда — 95.6", 956},
+    {"Rock FM — 95.2", 952},
+    {"Хит FM — 107.4", 1074},
+    {"JAZZ — 89.1", 891}};
 const uint8_t PRESETS_N = sizeof(PRESETS) / sizeof(Preset);
 
 // ===== helpers =====
@@ -80,7 +93,8 @@ void applyTune(uint16_t tenths)
     tenths = clampTenths(tenths);
     freq_tenths = tenths;
     ESPUI.updateControlValue(idLabelFreq, "Freq: " + fmtMHz(freq_tenths) + " MHz");
-    ESPUI.updateControlValue(idSlider, String(freq_tenths));
+    ESPUI.updateControlValue(idSliderMHz, String(freq_tenths / 10));
+    ESPUI.updateControlValue(idSliderFrac, String(freq_tenths % 10));
     if (radioOn && radioFound)
     {
         radio.tuneFM(freq_tenths * 10); // Si4713 expects 10 kHz units
@@ -125,11 +139,22 @@ void cbRadioSwitch(Control *sender, int type)
     }
 }
 
-void cbFreqSlider(Control *sender, int type)
+void cbFreqSliderMHz(Control *sender, int type)
 {
     if (type == SL_VALUE)
     {
-        uint16_t t = (uint16_t)sender->value.toInt(); // 820..1080
+        uint16_t mhz = (uint16_t)sender->value.toInt();
+        uint16_t t = mhz * 10 + (freq_tenths % 10);
+        applyTune(t);
+    }
+}
+
+void cbFreqSliderFrac(Control *sender, int type)
+{
+    if (type == SL_VALUE)
+    {
+        uint16_t frac = (uint16_t)sender->value.toInt();
+        uint16_t t = (freq_tenths / 10) * 10 + frac;
         applyTune(t);
     }
 }
@@ -186,6 +211,7 @@ void buildUI()
     // Tabs
     tabRadio = ESPUI.addControl(ControlType::Tab, "Radio", "Radio");
     tabRDS = ESPUI.addControl(ControlType::Tab, "RDS", "RDS");
+    tabAdvanced = ESPUI.addControl(ControlType::Tab, "Advanced", "Advanced");
 
     // --- Radio tab ---
     idSwitch = ESPUI.addControl(ControlType::Switcher, "Radio ON",
@@ -194,12 +220,18 @@ void buildUI()
     idLabelFreq = ESPUI.addControl(ControlType::Label, "Frequency", "Freq: --.- MHz",
                                    ControlColor::Peterriver, tabRadio);
 
-    // Slider: store 0.1 MHz units (820..1080)
-    idSlider = ESPUI.addControl(ControlType::Slider, "Tune (MHz ×0.1)",
-                                String(freq_tenths), ControlColor::Carrot, tabRadio, &cbFreqSlider);
-    ESPUI.addControl(ControlType::Min, "", "820", ControlColor::None, idSlider);
-    ESPUI.addControl(ControlType::Max, "", "1080", ControlColor::None, idSlider);
-    ESPUI.addControl(ControlType::Step, "", "1", ControlColor::None, idSlider);
+    // Sliders: MHz and tenths
+    idSliderMHz = ESPUI.addControl(ControlType::Slider, "Tune MHz",
+                                   String(freq_tenths / 10), ControlColor::Carrot, tabRadio, &cbFreqSliderMHz);
+    ESPUI.addControl(ControlType::Min, "", "82", ControlColor::None, idSliderMHz);
+    ESPUI.addControl(ControlType::Max, "", "108", ControlColor::None, idSliderMHz);
+    ESPUI.addControl(ControlType::Step, "", "1", ControlColor::None, idSliderMHz);
+
+    idSliderFrac = ESPUI.addControl(ControlType::Slider, "Decimals",
+                                    String(freq_tenths % 10), ControlColor::Carrot, tabRadio, &cbFreqSliderFrac);
+    ESPUI.addControl(ControlType::Min, "", "0", ControlColor::None, idSliderFrac);
+    ESPUI.addControl(ControlType::Max, "", "9", ControlColor::None, idSliderFrac);
+    ESPUI.addControl(ControlType::Step, "", "1", ControlColor::None, idSliderFrac);
 
     ESPUI.addControl(ControlType::Separator, "Presets (Moscow)", "",
                      ControlColor::None, tabRadio);
@@ -213,10 +245,10 @@ void buildUI()
     }
 
     ESPUI.addControl(ControlType::Separator, "TX power (dBuV)", "",
-                     ControlColor::None, tabRadio);
+                     ControlColor::None, tabAdvanced);
 
     idTxPower = ESPUI.addControl(ControlType::Slider, "Power",
-                                 String(txPower), ControlColor::Sunflower, tabRadio, &cbTxPower);
+                                 String(txPower), ControlColor::Sunflower, tabAdvanced, &cbTxPower);
     ESPUI.addControl(ControlType::Min, "", "88", ControlColor::None, idTxPower);
     ESPUI.addControl(ControlType::Max, "", "115", ControlColor::None, idTxPower);
     ESPUI.addControl(ControlType::Step, "", "1", ControlColor::None, idTxPower);
@@ -256,7 +288,8 @@ void setup()
 
     // sync UI with defaults
     ESPUI.updateControlValue(idLabelFreq, "Freq: " + fmtMHz(freq_tenths) + " MHz");
-    ESPUI.updateControlValue(idSlider, String(freq_tenths));
+    ESPUI.updateControlValue(idSliderMHz, String(freq_tenths / 10));
+    ESPUI.updateControlValue(idSliderFrac, String(freq_tenths % 10));
     ESPUI.updateControlValue(idTxPower, String(txPower));
 }
 
