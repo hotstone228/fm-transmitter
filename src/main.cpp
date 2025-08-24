@@ -236,11 +236,26 @@ void cbRdsApply(Control *sender, int type)
 void performScan(float startMHz, float endMHz, uint16_t stepKHz)
 {
     Serial.printf("[performScan] start=%.1f end=%.1f step=%u\n", startMHz, endMHz, stepKHz);
+
+    bool needPowerOff = false;
     if (!radioFound)
     {
-        Serial.println("[performScan] radio not found");
-        return;
+        // bring chip out of reset just for scanning
+        digitalWrite(RESETPIN, HIGH);
+        delay(15);
+        radioFound = radio.begin();
+        if (!radioFound)
+        {
+            Serial.println("[performScan] radio init failed");
+            return;
+        }
+        needPowerOff = true;
     }
+
+    // temporarily disable transmission during measurement to avoid hang
+    uint8_t prevPower = txPower;
+    radio.setTXpower(0);
+
     String results;
     for (uint32_t f_khz = (uint32_t)(startMHz * 1000); f_khz <= (uint32_t)(endMHz * 1000); f_khz += stepKHz)
     {
@@ -252,9 +267,15 @@ void performScan(float startMHz, float endMHz, uint16_t stepKHz)
         results += String(radio.currNoiseLevel);
         results += "\n";
         delay(5);
+        yield();
     }
     ESPUI.updateControlValue(idScanResults, results);
     Serial.println("[performScan] done");
+
+    // restore transmitter state
+    radio.setTXpower(prevPower);
+    if (needPowerOff)
+        radioPowerOff();
 }
 
 void cbScanButton(Control *sender, int type)

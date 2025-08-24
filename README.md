@@ -10,7 +10,7 @@ This project is an FM transmitter based on the ESP32-C3 microcontroller and the 
 - Frequency presets sorted by frequency
 - Web interface via Wi-Fi Access Point (no password by default)
 - Frequency correction offset
-- Scan FM band and view noise levels
+- Scan FM band and view noise levels (transmission pauses during scan)
 - Built with PlatformIO for Arduino framework
 
 ## Hardware Requirements
