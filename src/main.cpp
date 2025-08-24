@@ -192,12 +192,11 @@ void cbTxPower(Control *sender, int type)
 
 void cbFreqCorr(Control *sender, int type)
 {
-    if (type == S_VALUE)
+    if (type == N_VALUE)
     {
         freq_correction_khz = (int16_t)sender->value.toInt();
         Serial.printf("[cbFreqCorr] %d kHz\n", freq_correction_khz);
-        if (radioOn && radioFound)
-            applyTune(freq_tenths);
+        applyTune(freq_tenths); // retune with new correction
     }
 }
 
