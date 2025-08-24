@@ -3,8 +3,6 @@
 #include <Wire.h>
 #include <ESPUI.h>
 #include <Adafruit_Si4713.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
 // ===== Wi-Fi AP =====
 const char *AP_SSID = "FM-TX";
@@ -27,11 +25,10 @@ uint8_t txPower = TX_POWER_DBuv;
 bool rdsOn = true;
 
 // ===== UI IDs =====
-uint16_t tabRadio, tabRDS, tabAdvanced, tabScan;
+uint16_t tabRadio, tabRDS, tabAdvanced;
 uint16_t idSwitch, idLabelFreq, idSliderMHz, idSliderFrac, idSelect, idTxPower;
 uint16_t idFreqCorr;
 uint16_t idRdsSwitch, idRdsPS, idRdsRT, idRdsApply;
-uint16_t idScanStart, idScanEnd, idScanStep, idScanButton, idScanResults;
 
 // ===== Presets (Moscow) =====
 struct Preset
@@ -235,80 +232,6 @@ void cbRdsApply(Control *sender, int type)
     }
 }
 
-void performScan(float startMHz, float endMHz, uint16_t stepKHz)
-{
-    Serial.printf("[performScan] start=%.1f end=%.1f step=%u\n", startMHz, endMHz, stepKHz);
-
-    bool needPowerOff = false;
-    if (!radioFound)
-    {
-        // bring chip out of reset just for scanning
-        digitalWrite(RESETPIN, HIGH);
-        delay(15);
-        radioFound = radio.begin();
-        if (!radioFound)
-        {
-            Serial.println("[performScan] radio init failed");
-            return;
-        }
-        needPowerOff = true;
-    }
-
-    // temporarily disable transmission during measurement to avoid hang
-    uint8_t prevPower = txPower;
-    radio.setTXpower(0);
-
-    String results;
-    for (uint32_t f_khz = (uint32_t)(startMHz * 1000); f_khz <= (uint32_t)(endMHz * 1000); f_khz += stepKHz)
-    {
-        uint16_t f10k = f_khz / 10;
-        radio.readTuneMeasure(f10k);
-        radio.readTuneStatus();
-        results += fmtMHz((uint16_t)(f_khz / 100));
-        results += " : ";
-        results += String(radio.currNoiseLevel);
-        results += "\n";
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-    ESPUI.updateControlValue(idScanResults, results);
-    Serial.println("[performScan] done");
-
-    // restore transmitter state
-    radio.setTXpower(prevPower);
-    if (needPowerOff)
-        radioPowerOff();
-}
-
-struct ScanParams
-{
-    float startM;
-    float endM;
-    uint16_t stepKHz;
-};
-
-void scanTask(void *pv)
-{
-    ScanParams *p = (ScanParams *)pv;
-    performScan(p->startM, p->endM, p->stepKHz);
-    delete p;
-    vTaskDelete(NULL);
-}
-
-void cbScanButton(Control *sender, int type)
-{
-    if (type == B_UP)
-    {
-        Control *cStart = ESPUI.getControl(idScanStart);
-        Control *cEnd = ESPUI.getControl(idScanEnd);
-        Control *cStep = ESPUI.getControl(idScanStep);
-        float startM = cStart ? cStart->value.toFloat() : 87.5f;
-        float endM = cEnd ? cEnd->value.toFloat() : 108.0f;
-        uint16_t stepKHz = cStep ? (uint16_t)cStep->value.toInt() : 100;
-        Serial.printf("[cbScanButton] %.1f-%.1f step %u\n", startM, endM, stepKHz);
-        ScanParams *p = new ScanParams{startM, endM, stepKHz};
-        xTaskCreate(scanTask, "scan", 4096, p, 1, NULL);
-    }
-}
 
 // ===== build UI (classic API) =====
 void buildUI()
@@ -318,7 +241,6 @@ void buildUI()
     tabRadio = ESPUI.addControl(ControlType::Tab, "Radio", "Radio");
     tabRDS = ESPUI.addControl(ControlType::Tab, "RDS", "RDS");
     tabAdvanced = ESPUI.addControl(ControlType::Tab, "Advanced", "Advanced");
-    tabScan = ESPUI.addControl(ControlType::Tab, "Scan", "Scan");
 
     // --- Radio tab ---
     idSwitch = ESPUI.addControl(ControlType::Switcher, "Radio ON",
@@ -382,13 +304,6 @@ void buildUI()
 
     idRdsApply = ESPUI.addControl(ControlType::Button, "Apply RDS", "Send",
                                   ControlColor::Peterriver, tabRDS, &cbRdsApply);
-
-    // --- Scan tab ---
-    idScanStart = ESPUI.addControl(ControlType::Number, "Start MHz", "87.5", ControlColor::Wetasphalt, tabScan);
-    idScanEnd = ESPUI.addControl(ControlType::Number, "End MHz", "108", ControlColor::Wetasphalt, tabScan);
-    idScanStep = ESPUI.addControl(ControlType::Number, "Step kHz", "100", ControlColor::Wetasphalt, tabScan);
-    idScanButton = ESPUI.addControl(ControlType::Button, "Start Scan", "Scan", ControlColor::Peterriver, tabScan, &cbScanButton);
-    idScanResults = ESPUI.addControl(ControlType::Label, "Results", "", ControlColor::None, tabScan);
 }
 
 void setup()
